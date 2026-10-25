@@ -4,11 +4,12 @@ set -e -u -o pipefail
 ## Settings
 ##################################################################################
 
+OPENMPI_VERSION=5.0.11
 CUDA_VERSION=13.2.2
 # CUDA_VERSION=13.3.1
 NCCL_VERSION="2.32.3-1"
+NCCL_TESTS_VERSION="2.21.1"
 
-OPENMPI_VERSION=5.0.11
 
 export CC=gcc
 export CXX=g++
@@ -186,41 +187,89 @@ NCCL_URL=https://github.com/NVIDIA/nccl/archive/refs/tags/v${NCCL_VERSION}.tar.g
 [ ! -f "${REPRO_SCRIPT_DIR}/downloads/${NCCL_ARCHIVE}" ] && curl -L -o "${REPRO_SCRIPT_DIR}/downloads/${NCCL_ARCHIVE}" "${NCCL_URL}"
 [ ! -d "${NCCL_DIR}" ] && (echo "-- extract nccl" ; cd "${REPRO_SCRIPT_DIR}" && tar xf "${REPRO_SCRIPT_DIR}/downloads/${NCCL_ARCHIVE}")
 
-SOURCE_DIR="${REPRO_SCRIPT_DIR}/${NCCL_DIR}"
-BUILD_DIR="${REPRO_SCRIPT_DIR}/${NCCL_DIR}.$(basename "${CC}")-${CC_VERSION}.cuda-${CUDA_VERSION}.build"
-PREFIX_DIR="${REPRO_SCRIPT_DIR}/${NCCL_DIR}.$(basename "${CC}")-${CC_VERSION}.cuda-${CUDA_VERSION}.prefix"
+NCCL_SOURCE_DIR="${REPRO_SCRIPT_DIR}/${NCCL_DIR}"
+NCCL_BUILD_DIR="${REPRO_SCRIPT_DIR}/${NCCL_DIR}.$(basename "${CC}")-${CC_VERSION}.cuda-${CUDA_VERSION}.build"
+NCCL_PREFIX_DIR="${REPRO_SCRIPT_DIR}/${NCCL_DIR}.$(basename "${CC}")-${CC_VERSION}.cuda-${CUDA_VERSION}.prefix"
 
-if [ ! -f "${PREFIX_DIR}/lib/libnccl.so" ]; then
-    if [ ! -d "${SOURCE_DIR}" ]; then
-        tar xf "${NCCL_CACHE}" -C "${REPRO_SCRIPT_DIR}"
-    fi
-    rm -rf "${BUILD_DIR}"
-    mkdir -p "${BUILD_DIR}"
+if [ ! -f "${NCCL_PREFIX_DIR}/lib/libnccl.so" ]; then
+    rm -rf "${NCCL_BUILD_DIR}"
+    mkdir -p "${NCCL_BUILD_DIR}"
     (
         load_cuda
-        cd "${BUILD_DIR}"
+        cd "${NCCL_BUILD_DIR}"
         if [ ! -f Makefile ]; then
             cmake \
                 -Wno-dev \
                 -G 'Unix Makefiles' \
                 -DCMAKE_BUILD_TYPE=Release \
-                -DCMAKE_INSTALL_PREFIX="${PREFIX_DIR}" \
+                -DCMAKE_INSTALL_PREFIX="${NCCL_PREFIX_DIR}" \
                 -DCMAKE_INSTALL_LIBDIR="lib" \
                 -DBUILD_SHARED_LIBS=ON \
-                "${SOURCE_DIR}"
+                "${NCCL_SOURCE_DIR}"
         fi
         make -j $(nproc)
         make install
     )
 fi
 
+function load_nccl() {
+    export NCCL_VERSION="${NCCL_VERSION}"
+
+    export NCCL_HOME="${NCCL_PREFIX_DIR}"
+    export NCCL_ROOT="${NCCL_HOME}"
+    export NCCL_DIR="${NCCL_HOME}"
+    export ncclDIR="${NCCL_HOME}"
+
+    export NCCL_LIB="$NCCL_HOME/lib"
+    export NCCL_INC="$NCCL_HOME/include"
+    export NCCL_BIN="$NCCL_HOME/bin"
+
+    export PATH="${NCCL_HOME}/bin:${PATH}"
+    export CPATH="${NCCL_HOME}/include${CPATH:+:${CPATH}}"
+    export LIBRARY_PATH="${NCCL_HOME}/lib${LIBRARY_PATH:+:${LIBRARY_PATH}}"
+    export LD_LIBRARY_PATH="${NCCL_HOME}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+    export CMAKE_PREFIX_PATH="${NCCL_HOME}${CMAKE_PREFIX_PATH:+:${CMAKE_PREFIX_PATH}}"
+    export PKG_CONFIG_PATH="${NCCL_HOME}/lib/pkgconfig${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}"
+
+}
 ##################################################################################
 ## NCCL Tests
 ##################################################################################
+echo " -- NCCL Tests"
 
-echo TODO nccl ttests
+
+NCCL_TESTS_DIR=nccl-tests-${NCCL_TESTS_VERSION}
+NCCL_TESTS_ARCHIVE=${NCCL_TESTS_DIR}.tar.gz
+NCCL_TESTS_URL=https://github.com/NVIDIA/nccl-tests/archive/refs/tags/v${NCCL_TESTS_VERSION}.tar.gz
+
+[ ! -f "${REPRO_SCRIPT_DIR}/downloads/${NCCL_TESTS_ARCHIVE}" ] && curl -L -o "${REPRO_SCRIPT_DIR}/downloads/${NCCL_TESTS_ARCHIVE}" "${NCCL_TESTS_URL}"
+[ ! -d "${NCCL_TESTS_DIR}" ] && (echo "-- extract nccl" ; cd "${REPRO_SCRIPT_DIR}" && tar xf "${REPRO_SCRIPT_DIR}/downloads/${NCCL_TESTS_ARCHIVE}")
+
+SOURCE_DIR="${REPRO_SCRIPT_DIR}/${NCCL_TESTS_DIR}"
+BUILD_DIR="${REPRO_SCRIPT_DIR}/${NCCL_TESTS_DIR}.$(basename "${CC}")-${CC_VERSION}.cuda-${CUDA_VERSION}.nccl-${NCCL_VERSION}.build"
+PREFIX_DIR="${REPRO_SCRIPT_DIR}/${NCCL_TESTS_DIR}.$(basename "${CC}")-${CC_VERSION}.cuda-${CUDA_VERSION}.nccl-${NCCL_VERSION}.prefix"
+
+BIN_SUFFIX="_mpi"
+if [ ! -f "${PREFIX_DIR}/bin/hypercube_perf${BIN_SUFFIX}" ]; then
+    rm -rf "${BUILD_DIR}"
+    mkdir -p "${BUILD_DIR}"
+    (
+        cd "${BUILD_DIR}"
+        cp -r "${SOURCE_DIR}"/* .
+
+        load_cuda
+        load_openmpi
+        load_nccl
+
+        make -j $(nproc) MPI=1 NAME_SUFFIX="${BIN_SUFFIX}" MPI_HOME="${MPI_ROOT}" CUDA_HOME="${CUDA_ROOT}" NCCL_HOME="${NCCL_ROOT}" V=1 VERBOSE=1
+
+        mkdir -p "${PREFIX_DIR}/bin"
+        cp "${BUILD_DIR}/build/"*"${BIN_SUFFIX}" "${PREFIX_DIR}/bin/"
+    )
+fi
 
 ##################################################################################
 ## Exit
 ##################################################################################
+echo " -- Done."
 exit 0
